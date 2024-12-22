@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.optimize import minimize
+from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 from kernel import *
 from utils import *
@@ -65,20 +66,22 @@ class GP:
 
 
 class SparseGP:
-    def __init__(self, f, kernel, theta, bound, noise=1e-5):
+    def __init__(self, f, kernel, theta, bound, noise=1e-5, nugget=1e-10):
         """
 
         :param f: y = f(X)
-        :param kernel: kernel(X,Y,theta)，其中theta为超参数列表
+        :param kernel: kernel(X,Y,*theta)，其中theta为超参数列表
         :param theta: 超参数初始值
         :param bound: 超参数上下界
         :param noise: 噪声
+        :param nugget: 用于保持数值稳定性
         """
         self.f = f
         self.kernel = kernel
         self.theta = theta
         self.noise = noise
         self.bound = bound
+        self.nugget = nugget
         self._X = None
         self._y = None
         self._Z = None
@@ -87,43 +90,56 @@ class SparseGP:
         self._X_test = None
         self._y_test = None
 
-    def C_N_inv(self, theta):
-        K_yy = self.kernel(self._X, self._X, *theta) + self.noise * np.eye(self._X.shape[0])
-        K_yu = self.kernel(self._X, self._Z, *theta)
-        K_uu = self.kernel(self._Z, self._Z, *theta) + self.noise * np.eye(self._Z.shape[0])
-        Lambda = np.where(np.eye(self._X.shape[0]),K_yy - K_yu @ np.linalg.inv(K_uu) @ K_yu.T,0)
-        Lambda_inv = np.linalg.inv(Lambda)
-        return Lambda_inv - Lambda_inv @ K_yu @ np.linalg.inv(K_uu) @ K_yu.T @ Lambda_inv
-
-    def C_N(self, theta):
-        K_yy = self.kernel(self._X, self._X, *theta) + self.noise * np.eye(self._X.shape[0])
-        K_yu = self.kernel(self._X, self._Z, *theta)
-        K_uu = self.kernel(self._Z, self._Z, *theta) + self.noise * np.eye(self._Z.shape[0])
-        Lambda = np.where(np.eye(self._X.shape[0]),K_yy - K_yu @ np.linalg.inv(K_uu) @ K_yu.T,0)
-        return K_yu @  np.linalg.inv(K_uu) @ K_yu.T + Lambda + self.noise * np.eye(self._X.shape[0])
-
-    def fit(self, X, Z):
+    def fit(self, X, nz):
         self._X = X
-        self._Z = Z
+        kmeans = KMeans(n_clusters=nz)
+        kmeans.fit(X)
+        self._Z = kmeans.cluster_centers_
         self._y = self.f(X)
-
-        def marginal_likelihood(theta):
-            return np.sum(np.log(np.diagonal(np.linalg.cholesky(self.C_N(theta))))) + \
-                0.5 * self._y.T @ self.C_N_inv(theta) @ self._y + \
-                0.5 * self._X.shape[0] * np.log(2 * np.pi)
-
-        res = minimize(marginal_likelihood, x0=self.theta, bounds=self.bound, method='L-BFGS-B')
-        self.theta = res.x
+        def marginal_likelihood(hyperparameters):
+            theta = hyperparameters[:-1]
+            noise = hyperparameters[-1]
+            Knn = np.concatenate([self.kernel(self._X[[i],:],self._X[[i],:],*theta) for i in range(self._X.shape[0])]).T
+            Kmm = self.kernel(self._Z,self._Z,*theta) + self.nugget * np.eye(self._Z.shape[0])
+            Kmn = self.kernel(self._Z,self._X,*theta)
+            U = np.linalg.cholesky(Kmm)
+            U_inv = np.linalg.inv(U)
+            V = U_inv @ Kmn
+            D = Knn - np.sum(np.square(V),0) + noise
+            D_inv = np.eye(self._X.shape[0])/D
+            L = np.linalg.cholesky(np.eye(nz)+V@D_inv@V.T)
+            log_determinant =  np.sum(np.log(D)) + 2*np.sum(np.log(L.diagonal()))
+            L_inv = np.linalg.inv(L)
+            LVD = L_inv@V@D_inv
+            K_inv = D_inv - LVD.T@LVD
+            return log_determinant + 0.5 * self._y.T @ K_inv @ self._y + 0.5 * self._X.shape[0] * np.log(2 * np.pi)
+        x0 = self.theta
+        x0.append(self.noise)
+        bounds = self.bound
+        bounds.append([1e-5,None])
+        res = minimize(marginal_likelihood, x0=x0, bounds=bounds, method='L-BFGS-B')
+        self.theta = res.x[:-1]
+        self.noise = res.x[-1]
 
     def predict(self, X_test):
         self._X_test = X_test
-        C_N = self.kernel(self._X, self._X, *self.theta) + self.noise * np.eye(self._X.shape[0])
-        k = self.kernel(self._X, self._X_test, *self.theta)
-        c = self.kernel(self._X_test, self._X_test, *self.theta) + self.noise * np.eye(self._X_test.shape[0])
-        C_N_inv = np.linalg.inv(C_N)
-        m = k.T @ C_N_inv @ self._y
-        cov = c - k.T @ C_N_inv @ k
-        s = np.sqrt(np.where(np.diag(cov) > 0, np.diag(cov), 0))
+        Knn = np.concatenate([self.kernel(self._X[[i], :], self._X[[i], :], *self.theta) for i in range(self._X.shape[0])]).T
+        Kmm = self.kernel(self._Z, self._Z, *self.theta) + self.nugget * np.eye(self._Z.shape[0])
+        Kmn = self.kernel(self._Z, self._X, *self.theta)
+        U = np.linalg.cholesky(Kmm)
+        U_inv = np.linalg.inv(U)
+        V = U_inv @ Kmn
+        D = Knn - np.sum(np.square(V), 0) + self.noise
+        D_inv = np.eye(self._X.shape[0])/D
+        L = np.linalg.cholesky(np.eye(self._Z.shape[0]) + V @ D_inv @ V.T )
+        L_inv = np.linalg.inv(L)
+        LVD = L_inv@V@D_inv
+        K_inv = D_inv - LVD.T@LVD
+        K_test = self.kernel(self._X_test, self._X_test, *self.theta)
+        k_test = self.kernel(self._X,self._X_test,*self.theta)
+        m = k_test.T @ K_inv @ self._y
+        cov = np.clip(K_test - k_test.T @ K_inv @ k_test,1e-15,np.inf)
+        s = np.sqrt(np.diag(cov)+self.noise)
         self._m = m
         self._s = s
         return m, s
@@ -146,15 +162,16 @@ if __name__ == '__main__':
     # gp.predict(X_test)
     # gp.plot()
 
-    plt.figure(figsize=(16,8))
+    plt.figure(figsize=(16, 8))
     X = np.random.uniform(low=-1, high=1, size=(20, 1))
     X_test = np.linspace(-1, 1, 100).reshape(-1, 1)
     for i in range(6):
-        plt.subplot(3, 2, i+1)
-        sgp = SparseGP(test_1D, rbf, (1, 1), ((1e-5, None), (1e-5, None)),noise=1e-3)
-        sgp.fit(X,np.random.choice(X.reshape(-1),(i+1)*3,replace=False).reshape(-1,1))
+        plt.subplot(3, 2, i + 1)
+        nz = 3*(i+1)
+        sgp = SparseGP(test_1D, rbf, [1,1], [[1e-5,None],[1e-5,None]])
+        sgp.fit(X, nz)
         sgp.predict(X_test)
         sgp.plot()
-        plt.title(f'#pseudo data = {3*(i+1)}')
+        plt.title(f'#pseudo data = {nz}')
     plt.tight_layout()
     plt.show(dpi=600)
