@@ -11,13 +11,17 @@ def plot_pred(gts, preds, pred_cols="sklearn_pred", e_bar=None, title="stock_pre
     fig, axes = plt.subplots(3, 1, figsize=(8, 9))
     for i, (gt, pred) in enumerate(zip(gts, preds)):
         gt = gt[gt["year"] == 2011]
-        axes[i].plot(gt["year_day"], gt["year_adjClose"], label="True")
-        axes[i].plot(pred["year_day"], pred[pred_cols], label=pred_cols)
-        # if e_bar is not None:
-        #     axes[i].fill_between(pred["year_day"], pred[pred_cols], 
-        #                         pred[pred_cols] - 1.96 * pred[e_bar], pred[pred_cols] + 1.96 * pred[e_bar], 
-        #                         alpha=0.3
-        #                     )
+        sub = gt["adjClose"].iloc[0]
+        y_t = gt["adjClose"] - sub
+        y_p = pred[pred_cols] - sub
+        axes[i].plot(gt["year_day"], y_t, label="True")
+        axes[i].plot(pred["year_day"], y_p, label=pred_cols)
+        if e_bar is not None:
+            axes[i].fill_between(pred["year_day"], 
+                     y_p - pred[e_bar],  # 下边界
+                     y_p + pred[e_bar],  # 上边界
+                    alpha=0.3
+                )
         axes[i].set_title(["HPQ", "VZ", "SBUX"][i])
         axes[i].set_xlabel("year_day")
         axes[i].set_ylabel("adjClose")
