@@ -2,8 +2,11 @@ from abc import ABC, abstractmethod
 import numpy as np
 from utils import dist_spuare
 
+def rbf(x1, x2, l, s):
+    return l*np.exp(-0.5*s*dist_spuare(x1,x2))
 
-class Kernel(ABC):
+
+class MyKernel(ABC):
     # 基础径向基函数
     def __init__(self, l, s):
         self.l = l
@@ -13,13 +16,22 @@ class Kernel(ABC):
     def __call__(self, x1, x2):
         pass
 
+    def __add__(self, other):
+        return lambda x1, x2: self(x1, x2) + other(x1, x2)
 
-class RBF(Kernel):
+
+class MyC(MyKernel):
+    # 常数核函数
     def __call__(self, x1, x2):
-        return self.l*np.exp(-self.s*dist_spuare(x1,x2))
+        return self.l
 
 
-class Matern(Kernel):
+class MyRBF(MyKernel):
+    def __call__(self, x1, x2):
+        return self.l*np.exp(-0.5*self.s*dist_spuare(x1,x2))
+
+
+class MyMatern(MyKernel):
     # Matern核函数, 相较于基础的rbf核函数, 增加了一个参数v, 更加平滑
     def __init__(self, l, s, v):
         super().__init__(l, s)
@@ -37,7 +49,12 @@ class Matern(Kernel):
             raise ValueError('v must be 0.5, 1.5 or 2.5')
 
 
-class ExpSineSquared(Kernel):
+class MyDotProduct(MyKernel):
+    def __call__(self, x1, x2):
+        return self.l + x1 @ x2
+
+
+class MyExpSineSquared(MyKernel):
     def __init__(self, l, p, s):
         super().__init__(l, s)
         self.p = p
@@ -46,7 +63,7 @@ class ExpSineSquared(Kernel):
         return self.l*np.exp(-2*self.s*np.sin(np.pi*dist_spuare(x1,x2)/self.p)**2)
 
 
-class RationalQuadratic(Kernel):
+class MyRationalQuadratic(MyKernel):
     def __init__(self, l, a, s):
         super().__init__(l, s)
         self.a = a
@@ -55,7 +72,7 @@ class RationalQuadratic(Kernel):
         return self.l*(1+dist_spuare(x1,x2)/(2*self.a))**(-self.a)
 
 
-class WhiteKernel(Kernel):
+class MyWhiteKernel(MyKernel):
     def __init__(self, l):
         super().__init__(l, 0)
 

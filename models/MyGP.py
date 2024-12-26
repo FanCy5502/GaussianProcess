@@ -4,7 +4,7 @@ from scipy.optimize import minimize
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 import os
-from kernel import *
+from models.kernels import *
 from utils.utils import *
 import seaborn as sns
 
